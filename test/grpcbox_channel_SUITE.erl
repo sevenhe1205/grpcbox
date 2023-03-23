@@ -4,28 +4,42 @@
         init_per_suite/1,
         end_per_suite/1,
         add_and_remove_endpoints/1,
-        pick_worker_strategy/1]).
+        add_and_remove_endpoints_active_workers/1,
+        pick_worker_strategy/1,
+        pick_active_worker_strategy/1]).
 
 -include_lib("eunit/include/eunit.hrl").
 
 all() ->
     [
         add_and_remove_endpoints,
-        pick_worker_strategy
+        add_and_remove_endpoints_active_workers,
+        pick_worker_strategy,
+        pick_active_worker_strategy
     ].
 init_per_suite(_Config) ->
-    application:set_env(grpcbox, servers, []),
+    GrpcOptions = #{service_protos => [route_guide_pb], services => #{'routeguide.RouteGuide' => routeguide_route_guide}},
+    Servers = [#{grpc_opts => GrpcOptions,
+                 listen_opts => #{port => 18080, ip => {127,0,0,1}}},
+                #{grpc_opts => GrpcOptions,
+                 listen_opts => #{port => 18081, ip => {127,0,0,1}}},
+                 #{grpc_opts => GrpcOptions,
+                 listen_opts => #{port => 18082, ip => {127,0,0,1}}},
+                 #{grpc_opts => GrpcOptions,
+                 listen_opts => #{port => 18083, ip => {127,0,0,1}}}],
+    application:set_env(grpcbox, servers, Servers),
     application:ensure_all_started(grpcbox),
+    ct:sleep(1000),
     grpcbox_channel_sup:start_link(),
-    grpcbox_channel_sup:start_child(default_channel, [{https, "127.0.0.1", 8080, #{}}], #{}),
+    grpcbox_channel_sup:start_child(default_channel, [{http, "127.0.0.1", 18080, #{}}], #{}),
     grpcbox_channel_sup:start_child(random_channel,
-                                    [{https, "127.0.0.1", 8080, #{}}, {https, "127.0.0.2", 8080, #{}}, {https, "127.0.0.3", 8080, #{}}, {https, "127.0.0.4", 8080, #{}}],
+                                    [{http, "127.0.0.1", 18080, #{}}, {http, "127.0.0.1", 18081, #{}}, {http, "127.0.0.1", 18082, #{}}, {http, "127.0.0.1", 18083, #{}}],
                                     #{balancer => random}),
     grpcbox_channel_sup:start_child(hash_channel,
-                                    [{https, "127.0.0.1", 8080, #{}}, {https, "127.0.0.2", 8080, #{}}, {https, "127.0.0.3", 8080, #{}}, {https, "127.0.0.4", 8080, #{}}],
+                                    [{http, "127.0.0.1", 18080, #{}}, {http, "127.0.0.1", 18081, #{}}, {http, "127.0.0.1", 18082, #{}}, {http, "127.0.0.1", 18083, #{}}],
                                     #{balancer => hash}),
     grpcbox_channel_sup:start_child(direct_channel,
-                                    [{https, "127.0.0.1", 8080, #{}}, {https, "127.0.0.2", 8080, #{}}, {https, "127.0.0.3", 8080, #{}}, {https, "127.0.0.4", 8080, #{}}],
+                                    [{http, "127.0.0.1", 18080, #{}}, {http, "127.0.0.1", 18081, #{}}, {http, "127.0.0.1", 18082, #{}}, {http, "127.0.0.4", 18084, #{}}],
                                     #{ balancer => direct}),
 
     _Config.
@@ -34,11 +48,30 @@ end_per_suite(_Config) ->
     application:stop(grpcbox),
     ok.
 
+
 add_and_remove_endpoints(_Config) ->
-    grpcbox_channel:add_endpoints(default_channel, [{https, "127.0.0.2", 8080, #{}}, {https, "127.0.0.3", 8080, #{}}, {https, "127.0.0.4", 8080, #{}}]),
+    grpcbox_channel:add_endpoints(default_channel, [{http, "127.0.0.1", 18081, #{}}, {http, "127.0.0.1", 18082, #{}}, {http, "127.0.0.1", 18083, #{}}]),
     ?assertMatch(4, length(gproc_pool:active_workers(default_channel))),
-    grpcbox_channel:remove_endpoints(default_channel, [{https, "127.0.0.1", 8080, #{}}, {https, "127.0.0.2", 8080, #{}}, {https, "127.0.0.4", 8080, #{}}], normal),
-    ?assertMatch(1, length(gproc_pool:active_workers(default_channel))).
+    grpcbox_channel:add_endpoints(default_channel, [{https, "127.0.0.1", 18081, #{}}, {https, "127.0.0.1", 18082, #{}}, {https, "127.0.0.1", 18083, #{}}]),
+    ?assertMatch(7, length(gproc_pool:active_workers(default_channel))),
+    grpcbox_channel:remove_endpoints(default_channel, [{http, "127.0.0.1", 18081, #{}}, {http, "127.0.0.1", 18082, #{}}, {http, "127.0.0.1", 18083, #{}}], normal),
+    ?assertMatch(4, length(gproc_pool:active_workers(default_channel))),
+    grpcbox_channel:remove_endpoints(default_channel, [{https, "127.0.0.1", 18080, #{}}, {https, "127.0.0.1", 18081, #{}}, {https, "127.0.0.1", 18082, #{}}], normal),
+    ?assertMatch(2, length(gproc_pool:active_workers(default_channel))).
+
+add_and_remove_endpoints_active_workers(_Config) ->
+    grpcbox_channel:add_endpoints(default_channel, [{http, "127.0.0.1", 18081, #{}}, {http, "127.0.0.1", 18082, #{}}, {http, "127.0.0.1", 18083, #{}}]),
+    ct:sleep(1000),
+    ?assertMatch(4, length(gproc_pool:active_workers({default_channel, active}))),
+    grpcbox_channel:add_endpoints(default_channel, [{https, "127.0.0.1", 18081, #{}}, {https, "127.0.0.1", 18082, #{}}, {https, "127.0.0.1", 18083, #{}}]),
+    ct:sleep(1000),
+    ?assertMatch(4, length(gproc_pool:active_workers({default_channel, active}))),
+    grpcbox_channel:remove_endpoints(default_channel, [{http, "127.0.0.1", 18081, #{}}, {http, "127.0.0.1", 18082, #{}}, {http, "127.0.0.1", 18083, #{}}], normal),
+    ct:sleep(1000),
+    ?assertMatch(1, length(gproc_pool:active_workers({default_channel, active}))),
+    grpcbox_channel:remove_endpoints(default_channel, [{https, "127.0.0.1", 18081, #{}}, {https, "127.0.0.1", 18082, #{}}, {https, "127.0.0.1", 18083, #{}}], normal),
+    ct:sleep(1000),
+    ?assertMatch(1, length(gproc_pool:active_workers({default_channel, active}))).
 
 pick_worker_strategy(_Config) ->
     ?assertMatch(ok, pick_worker(default_channel)),
@@ -51,6 +84,17 @@ pick_worker_strategy(_Config) ->
     ?assertMatch(error, pick_worker(hash_channel)),
     ok.
 
+pick_active_worker_strategy(_Config) ->
+    ct:sleep(1000),
+    ?assertMatch(ok, pick_worker({default_channel, active})),
+    ?assertMatch(ok, pick_worker({random_channel, active})),
+    ?assertMatch(ok, pick_worker({direct_channel, active}, 1)),
+    ?assertMatch(ok, pick_worker({hash_channel, active}, 1)),
+    ?assertMatch(error, pick_worker({default_channel, active}, 1)),
+    ?assertMatch(error, pick_worker({random_channel, active}, 1)),
+    ?assertMatch(error, pick_worker({direct_channel, active})),
+    ?assertMatch(error, pick_worker({hash_channel, active})),
+    ok.
 pick_worker(Name, N) ->
     {R, _} = grpcbox_channel:pick(Name, unary, N),
     R.
