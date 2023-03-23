@@ -27,6 +27,7 @@
 -type endpoint() :: {transport(), host(), inet:port_number(), ssl:ssl_option()}.
 
 -type options() :: #{balancer => load_balancer(),
+                     endpoint_connection_num => integer(),
                      encoding => gprcbox:encoding(),
                      unary_interceptor => grpcbox_client:unary_interceptor(),
                      stream_interceptor => grpcbox_client:stream_interceptor(),
@@ -39,6 +40,7 @@
               endpoint/0]).
 
 -record(data, {endpoints :: [endpoint()],
+               endpoint_connection_num :: integer(),
                pool :: atom(),
                resolver :: module(),
                balancer :: grpcbox:balancer(),
@@ -111,6 +113,7 @@ init([Name, Endpoints, Options]) ->
     BalancerType = maps:get(balancer, Options, round_robin),
     Encoding = maps:get(encoding, Options, identity),
     StatsHandler = maps:get(stats_handler, Options, undefined),
+    EndpointConnectionNum = maps:get(endpoint_connection_num, Options, 1),
 
     insert_interceptors(Name, Options),
 
@@ -119,6 +122,7 @@ init([Name, Endpoints, Options]) ->
     gproc_pool:new({Name, active}, BalancerType, [{size, length(Endpoints)},
                                         {auto_size, true}]),
     Data = #data{
+        endpoint_connection_num = EndpointConnectionNum,
         pool = Name,
         encoding = Encoding,
         stats_handler = StatsHandler,
@@ -128,7 +132,7 @@ init([Name, Endpoints, Options]) ->
         false ->
             {ok, idle, Data, [{next_event, internal, connect}]};
         true ->
-            start_workers(Name, StatsHandler, Encoding, Endpoints),
+            start_workers(Name, StatsHandler, Encoding, Endpoints, EndpointConnectionNum),
             {ok, connected, Data}
     end.
 
@@ -139,31 +143,34 @@ connected({call, From}, is_ready, _Data) ->
     {keep_state_and_data, [{reply, From, true}]};
 connected({call, From}, {add_endpoints, Endpoints},
             Data=#data{pool=Pool,
+                        endpoint_connection_num = EndpointConnectionNum,
                         stats_handler=StatsHandler,
                         encoding=Encoding,
                         endpoints=TotalEndpoints}) ->
     NewEndpoints = lists:subtract(Endpoints, TotalEndpoints),
     NewTotalEndpoints = lists:umerge(TotalEndpoints, Endpoints),
-    start_workers(Pool, StatsHandler, Encoding, NewEndpoints),
+    start_workers(Pool, StatsHandler, Encoding, NewEndpoints, EndpointConnectionNum),
     {keep_state, Data#data{endpoints=NewTotalEndpoints}, [{reply, From, ok}]};
 connected({call, From}, {remove_endpoints, Endpoints, Reason},
             Data=#data{pool=Pool,
+                        endpoint_connection_num = EndpointConnectionNum,
                         endpoints=TotalEndpoints}) ->
 
     NewEndpoints = sets:to_list(sets:intersection(sets:from_list(Endpoints),
                                 sets:from_list(TotalEndpoints))),
     NewTotalEndpoints = lists:subtract(TotalEndpoints, Endpoints),
-    stop_workers(Pool, NewEndpoints, Reason),
+    stop_workers(Pool, NewEndpoints, EndpointConnectionNum, Reason),
     {keep_state, Data#data{endpoints = NewTotalEndpoints}, [{reply, From, ok}]};
 connected(EventType, EventContent, Data) ->
     handle_event(EventType, EventContent, Data).
 
 idle(internal, connect, Data=#data{pool=Pool,
+                                    endpoint_connection_num = EndpointConnectionNum,
                                     stats_handler=StatsHandler,
                                     encoding=Encoding,
                                     endpoints=Endpoints}) ->
 
-    start_workers(Pool, StatsHandler, Encoding, Endpoints),
+    start_workers(Pool, StatsHandler, Encoding, Endpoints, EndpointConnectionNum),
     {next_state, connected, Data};
 idle({call, From}, is_ready, _Data) ->
     {keep_state_and_data, [{reply, From, false}]};
@@ -212,19 +219,19 @@ insert_stream_interceptor(Name, _Type, Interceptors) ->
             ets:insert(?CHANNELS_TAB, {{Name, stream}, Interceptor})
     end.
 
-start_workers(Pool, StatsHandler, Encoding, Endpoints) ->
+start_workers(Pool, StatsHandler, Encoding, Endpoints, EndpointConnectionNum) ->
     [begin
         gproc_pool:add_worker(Pool, Endpoint),
         gproc_pool:add_worker({Pool, active}, Endpoint),
         {ok, Pid} = grpcbox_subchannel:start_link(Endpoint,
                                                     Pool, Endpoint, Encoding, StatsHandler),
         Pid
-     end || Endpoint <- Endpoints].
+     end || Id <- lists:seq(1, EndpointConnectionNum), Endpoint <- Endpoints].
 
-stop_workers(Pool, Endpoints, Reason) ->
+stop_workers(Pool, Endpoints, EndpointConnectionNum, Reason) ->
     [begin
-        case gproc_pool:whereis_worker(Pool, Endpoint) of
+        case gproc_pool:whereis_worker(Pool, {Id, Endpoint}) of
             undefined -> ok;
             Pid -> grpcbox_subchannel:stop(Pid, Reason)
         end
-     end || Endpoint <- Endpoints].
+     end || Id <- lists:seq(1, EndpointConnectionNum), Endpoint <- Endpoints].

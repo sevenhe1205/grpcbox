@@ -73,6 +73,12 @@ add_and_remove_endpoints_active_workers(_Config) ->
     ct:sleep(1000),
     ?assertMatch(1, length(gproc_pool:active_workers({default_channel, active}))).
 
+add_and_remove_multi_connections_endpoints(_Config) ->
+    grpcbox_channel:add_endpoints(multi_connections_channel, [{https, "127.0.0.2", 8080, #{}}, {https, "127.0.0.3", 8080, #{}}, {https, "127.0.0.4", 8080, #{}}]),
+    ?assertMatch(32, length(gproc_pool:active_workers(multi_connections_channel))),
+    grpcbox_channel:remove_endpoints(multi_connections_channel, [{https, "127.0.0.1", 8080, #{}}, {https, "127.0.0.4", 8080, #{}}], normal),
+    ?assertMatch(16, length(gproc_pool:active_workers(multi_connections_channel))).
+
 pick_worker_strategy(_Config) ->
     ?assertMatch(ok, pick_worker(default_channel)),
     ?assertMatch(ok, pick_worker(random_channel)),
@@ -101,3 +107,4 @@ pick_worker(Name, N) ->
 pick_worker(Name) ->
     {R, _} = grpcbox_channel:pick(Name, unary, undefined),
     R.
+
