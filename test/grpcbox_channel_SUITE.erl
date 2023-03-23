@@ -10,7 +10,8 @@
 
 all() ->
     [
-        add_and_remove_endpoints
+        add_and_remove_endpoints,
+        pick_worker_strategy
     ].
 init_per_suite(_Config) ->
     application:set_env(grpcbox, servers, []),
@@ -35,6 +36,24 @@ end_per_suite(_Config) ->
 
 add_and_remove_endpoints(_Config) ->
     grpcbox_channel:add_endpoints(default_channel, [{https, "127.0.0.2", 8080, #{}}, {https, "127.0.0.3", 8080, #{}}, {https, "127.0.0.4", 8080, #{}}]),
-    ?assertMatch(4, length(gproc_pool:active_workers(default_channel))),
+    ?assertEqual(4, length(gproc_pool:active_workers(default_channel))),
     grpcbox_channel:remove_endpoints(default_channel, [{https, "127.0.0.1", 8080, #{}}, {https, "127.0.0.2", 8080, #{}}, {https, "127.0.0.4", 8080, #{}}], normal),
-    ?assertMatch(1, length(gproc_pool:active_workers(default_channel))).
+    ?assertEqual(1, length(gproc_pool:active_workers(default_channel))).
+
+pick_worker_strategy(_Config) ->
+    ?assertEqual(ok, pick_worker(default_channel)),
+    ?assertEqual(ok, pick_worker(random_channel)),
+    ?assertEqual(ok, pick_worker(direct_channel, 1)),
+    ?assertEqual(ok, pick_worker(hash_channel, 1)),
+    ?assertEqual(error, pick_worker(default_channel, 1)),
+    ?assertEqual(error, pick_worker(random_channel, 1)),
+    ?assertEqual(error, pick_worker(direct_channel)),
+    ?assertEqual(error, pick_worker(hash_channel)),
+    ok.
+
+pick_worker(Name, N) ->
+    {R, _} = grpcbox_channel:pick(Name, unary, N),
+    R.
+pick_worker(Name) ->
+    {R, _} = grpcbox_channel:pick(Name, unary, undefined),
+    R.

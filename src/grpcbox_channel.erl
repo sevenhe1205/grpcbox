@@ -5,6 +5,7 @@
 -export([start_link/3,
          is_ready/1,
          pick/2,
+         pick/3,
          add_endpoints/2,
          remove_endpoints/3,
          stop/1,
@@ -57,11 +58,19 @@ is_ready(Name) ->
     gen_statem:call(?CHANNEL(Name), is_ready).
 
 %% @doc Picks a subchannel from a pool using the configured strategy.
--spec pick(name(), unary | stream) -> {ok, {pid(), grpcbox_client:interceptor() | undefined}} |
-                                   {error, undefined_channel | no_endpoints}.
+-spec pick(name(), unary | stream) ->
+    {ok, {pid(), grpcbox_client:interceptor() | undefined}} |
+    {error, undefined_channel | no_endpoints}.
 pick(Name, CallType) ->
+    pick(Name, CallType, undefined).
+
+%% @doc Picks a subchannel from a pool using the configured strategy.
+-spec pick(name(), unary | stream, term() | undefined) ->
+    {ok, {pid(), grpcbox_client:interceptor() | undefined}} |
+    {error, undefined_channel | no_endpoints}.
+pick(Name, CallType, Key) ->
     try
-        case gproc_pool:pick_worker(Name) of
+        case pick_worker(Name, Key) of
             false -> {error, no_endpoints};
             Pid when is_pid(Pid) ->
                 {ok, {Pid, interceptor(Name, CallType)}}
@@ -70,6 +79,11 @@ pick(Name, CallType) ->
         error:badarg ->
             {error, undefined_channel}
     end.
+
+pick_worker(Name, undefined) ->
+    gproc_pool:pick_worker(Name);
+pick_worker(Name, Key) ->
+    gproc_pool:pick_worker(Name, Key).
 
 add_endpoints(Name, Endpoints) ->
     gen_statem:call(?CHANNEL(Name), {add_endpoints, Endpoints}).
@@ -123,9 +137,9 @@ connected({call, From}, is_ready, _Data) ->
     {keep_state_and_data, [{reply, From, true}]};
 connected({call, From}, {add_endpoints, Endpoints},
             Data=#data{pool=Pool,
-                        stats_handler=StatsHandler,
-                        encoding=Encoding,
-                        endpoints=TotalEndpoints}) ->
+                       stats_handler=StatsHandler,
+                       encoding=Encoding,
+                       endpoints=TotalEndpoints}) ->
     NewEndpoints = lists:subtract(Endpoints, TotalEndpoints),
     NewTotalEndpoints = lists:umerge(TotalEndpoints, Endpoints),
     start_workers(Pool, StatsHandler, Encoding, NewEndpoints),
@@ -197,8 +211,8 @@ insert_stream_interceptor(Name, _Type, Interceptors) ->
 start_workers(Pool, StatsHandler, Encoding, Endpoints) ->
     [begin
         gproc_pool:add_worker(Pool, Endpoint),
-        {ok, Pid} = grpcbox_subchannel:start_link(Endpoint,
-                                                    Pool, Endpoint, Encoding, StatsHandler),
+        gproc_pool:add_worker({Pool, active}, Endpoint),
+        {ok, Pid} = grpcbox_subchannel:start_link(Endpoint, Pool, Endpoint, Encoding, StatsHandler),
         Pid
      end || Endpoint <- Endpoints].
 
