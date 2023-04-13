@@ -6,7 +6,8 @@
         add_and_remove_endpoints/1,
         add_and_remove_endpoints_active_workers/1,
         pick_worker_strategy/1,
-        pick_active_worker_strategy/1]).
+        pick_active_worker_strategy/1,
+        pick_specify_worker_strategy/1]).
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -15,7 +16,8 @@ all() ->
         add_and_remove_endpoints,
         add_and_remove_endpoints_active_workers,
         pick_worker_strategy,
-        pick_active_worker_strategy
+        pick_active_worker_strategy,
+        pick_specify_worker_strategy
     ].
 init_per_suite(_Config) ->
     application:set_env(grpcbox, client, #{channel => []}),
