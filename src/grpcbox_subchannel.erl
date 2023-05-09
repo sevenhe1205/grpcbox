@@ -14,6 +14,8 @@
          ready/3,
          disconnected/3]).
 
+-define(RECONNECT_INTERVAL, 5000).
+
 -record(data, {name :: any(),
                endpoint :: grpcbox_channel:endpoint(),
                channel :: grpcbox_channel:t(),
@@ -42,13 +44,13 @@ stop(Pid, Reason) ->
 
 init([Name, Channel, Endpoint, Encoding, StatsHandler]) ->
     process_flag(trap_exit, true),
-
     gproc_pool:connect_worker(Channel, Name),
-    {ok, disconnected, #data{name=Name,
-                             conn=undefined,
-                             info=info_map(Endpoint, Encoding, StatsHandler),
-                             endpoint=Endpoint,
-                             channel=Channel}}.
+    Data = #data{name=Name,
+            conn=undefined,
+            info=info_map(Endpoint, Encoding, StatsHandler),
+            endpoint=Endpoint,
+            channel=Channel},
+    {ok, disconnected, Data, [{next_event, internal, connect}]}.
 
 info_map({http, Host, 80, _}, Encoding, StatsHandler) ->
     #{authority => list_to_binary(Host),
@@ -72,20 +74,28 @@ callback_mode() ->
 ready({call, From}, conn, #data{conn=Conn,
                                 info=Info}) ->
     {keep_state_and_data, [{reply, From, {ok, Conn, Info}}]};
+ready(info, {'EXIT', Pid, _}, Data=#data{conn=Pid, name=Name, channel=Channel}) ->
+    gproc_pool:disconnect_worker({Channel, active}, Name),
+    {next_state, disconnected, Data#data{conn=undefined}, [{next_event, internal, connect}]};
+ready(info, {timeout, connect}, _Data) ->
+    keep_state_and_data;
 ready(EventType, EventContent, Data) ->
     handle_event(EventType, EventContent, Data).
 
+disconnected(internal, connect, Data) ->
+    do_connect(Data);
+disconnected(info, {timeout, connect}, Data) ->
+    do_connect(Data);
 disconnected({call, From}, conn, Data) ->
     connect(Data, From, [postpone]);
+disconnected(info, {'EXIT', _, _}, #data{conn=undefined}) ->
+    erlang:send_after(?RECONNECT_INTERVAL, self(), {timeout, connect}),
+    keep_state_and_data;
 disconnected(EventType, EventContent, Data) ->
     handle_event(EventType, EventContent, Data).
 
 handle_event({call, From}, info, #data{info=Info}) ->
     {keep_state_and_data, [{reply, From, Info}]};
-handle_event(info, {'EXIT', Pid, _}, Data=#data{conn=Pid}) ->
-    {next_state, disconnected, Data#data{conn=undefined}};
-handle_event(info, {'EXIT', _, econnrefused}, #data{conn=undefined}) ->
-    keep_state_and_data;
 handle_event({call, From}, shutdown, _) ->
     {stop_and_reply, normal, {reply, From, ok}};
 handle_event(_, _, _) ->
@@ -96,6 +106,7 @@ terminate(_Reason, _State, #data{conn=undefined,
                                  channel=Channel}) ->
     gproc_pool:disconnect_worker(Channel, Name),
     gproc_pool:remove_worker(Channel, Name),
+    gproc_pool:remove_worker({Channel, active}, Name),
     ok;
 terminate(normal, _State, #data{conn=Pid,
                                  name=Name,
@@ -103,21 +114,39 @@ terminate(normal, _State, #data{conn=Pid,
     h2_connection:stop(Pid),
     gproc_pool:disconnect_worker(Channel, Name),
     gproc_pool:remove_worker(Channel, Name),
+    gproc_pool:disconnect_worker({Channel, active}, Name),
+    gproc_pool:remove_worker({Channel, active}, Name),
     ok;
 terminate(Reason, _State, #data{conn=Pid,
                                  name=Name,
                                  channel=Channel}) ->
     gproc_pool:disconnect_worker(Channel, Name),
     gproc_pool:remove_worker(Channel, Name),
+    gproc_pool:disconnect_worker({Channel, active}, Name),
+    gproc_pool:remove_worker({Channel, active}, Name),
     exit(Pid, Reason),
     ok.
 
-connect(Data=#data{conn=undefined,
-                   endpoint={Transport, Host, Port, SSLOptions}}, From, Actions) ->
+do_connect(Data=#data{name=Name, channel=Channel,
+                conn=undefined, endpoint={Transport, Host, Port, SSLOptions}}) ->
     case h2_client:start_link(Transport, Host, Port, options(Transport, SSLOptions),
                              #{garbage_on_end => true,
                                stream_callback_mod => grpcbox_client_stream}) of
         {ok, Pid} ->
+            gproc_pool:connect_worker({Channel, active}, Name),
+            {next_state, ready, Data#data{conn=Pid}};
+        {error, _} ->
+            erlang:send_after(?RECONNECT_INTERVAL, self(), {timeout, connect}),
+            {next_state, disconnected, Data#data{conn=undefined}}
+    end.
+
+connect(Data=#data{name=Name, channel=Channel,
+                conn=undefined, endpoint={Transport, Host, Port, SSLOptions}}, From, Actions) ->
+    case h2_client:start_link(Transport, Host, Port, options(Transport, SSLOptions),
+                             #{garbage_on_end => true,
+                               stream_callback_mod => grpcbox_client_stream}) of
+        {ok, Pid} ->
+            gproc_pool:connect_worker({Channel, active}, Name),
             {next_state, ready, Data#data{conn=Pid}, Actions};
         {error, _}=Error ->
             {next_state, disconnected, Data#data{conn=undefined}, [{reply, From, Error}]}
