@@ -159,6 +159,7 @@ options(http, Options) ->
 
 start_h2_client({Transport, Host, Port, EndpointOptions}) ->
     % Get and delete non-ssl options from endpoint options, these are passed as connection settings
+    SocketOptions = proplists:get_value(socket_options, EndpointOptions, []),
     ConnectTimeout = proplists:get_value(connect_timeout, EndpointOptions, 5000),
     TcpUserTimeout = proplists:get_value(tcp_user_timeout, EndpointOptions, 0),
     EndpointOptions2 = proplists:delete(connect_timeout, EndpointOptions),
@@ -167,4 +168,5 @@ start_h2_client({Transport, Host, Port, EndpointOptions}) ->
                               #{garbage_on_end => true,
                                 stream_callback_mod => grpcbox_client_stream,
                                 connect_timeout => ConnectTimeout,
-                                tcp_user_timeout => TcpUserTimeout}).
+                                tcp_user_timeout => TcpUserTimeout,
+                                socket_options => SocketOptions}).
