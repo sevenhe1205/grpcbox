@@ -1,5 +1,7 @@
 -module(grpcbox_channel).
 
+-include_lib("kernel/include/logger.hrl").
+
 -behaviour(gen_statem).
 
 -export([start_link/3,
@@ -190,8 +192,8 @@ terminate({shutdown, force_delete}, _State, #data{pool=Name}) ->
     gproc_pool:force_delete({Name, active});
 terminate(Reason, _State, #data{pool=Name}) ->
     [grpcbox_subchannel:stop(Pid, Reason) || {_Channel, Pid} <- gproc_pool:active_workers(Name)],
-    gproc_pool:delete(Name),
-    gproc_pool:delete({Name, active}),
+    gproc_pool:force_delete(Name),
+    gproc_pool:force_delete({Name, active}),
     ok.
 
 insert_interceptors(Name, Interceptors) ->
@@ -226,11 +228,13 @@ insert_stream_interceptor(Name, _Type, Interceptors) ->
 
 start_workers(Pool, StatsHandler, Encoding, Endpoints) ->
     [begin
-        gproc_pool:add_worker(Pool, Endpoint),
-        gproc_pool:add_worker({Pool, active}, Endpoint),
-        {ok, Pid} = grpcbox_subchannel:start_link(Endpoint,
-                                                    Pool, Endpoint, Encoding, StatsHandler),
-        Pid
+        case try_add_worker(Pool, Endpoint) of
+            ok ->
+                grpcbox_subchannel:start_link(Endpoint, Pool, Endpoint, Encoding, StatsHandler),
+                ok;
+            error ->
+                error
+        end
      end || Endpoint <- Endpoints].
 
 stop_workers(Pool, Endpoints, Reason) ->
@@ -240,3 +244,16 @@ stop_workers(Pool, Endpoints, Reason) ->
             Pid -> grpcbox_subchannel:stop(Pid, Reason)
         end
      end || Endpoint <- Endpoints].
+
+try_add_worker(Pool, Endpoint) ->
+    try
+        gproc_pool:add_worker(Pool, Endpoint),
+        gproc_pool:add_worker({Pool, active}, Endpoint),
+        ok
+    catch
+        error:exists ->
+            ok;
+        C:E:S ->
+            ?LOG_INFO("crash: class=~p exception=~p stacktrace=~p", [C, E, S]),
+            error
+    end.

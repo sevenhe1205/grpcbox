@@ -55,12 +55,16 @@ end_per_suite(_Config) ->
 add_and_remove_endpoints(_Config) ->
     grpcbox_channel:add_endpoints(default_channel, [{http, "127.0.0.1", 18081, []}, {http, "127.0.0.1", 18082, []}, {http, "127.0.0.1", 18083, []}]),
     ?assertEqual(4, length(gproc_pool:active_workers(default_channel))),
+    grpcbox_channel:add_endpoints(default_channel, [{http, "127.0.0.1", 18081, []}, {http, "127.0.0.1", 18082, []}]),
+    ?assertEqual(4, length(gproc_pool:active_workers(default_channel))),
     grpcbox_channel:add_endpoints(default_channel, [{https, "127.0.0.1", 18081, []}, {https, "127.0.0.1", 18082, []}, {https, "127.0.0.1", 18083, []}]),
     ?assertEqual(7, length(gproc_pool:active_workers(default_channel))),
     grpcbox_channel:remove_endpoints(default_channel, [{http, "127.0.0.1", 18081, []}, {http, "127.0.0.1", 18082, []}, {http, "127.0.0.1", 18083, []}], normal),
     ?assertEqual(4, length(gproc_pool:active_workers(default_channel))),
     grpcbox_channel:remove_endpoints(default_channel, [{https, "127.0.0.1", 18080, []}, {https, "127.0.0.1", 18081, []}, {https, "127.0.0.1", 18082, []}], normal),
-    ?assertEqual(2, length(gproc_pool:active_workers(default_channel))).
+    ?assertEqual(2, length(gproc_pool:active_workers(default_channel))),
+    grpcbox_channel:add_endpoints(default_channel, [{http, "127.0.0.1", 18081, []}, {http, "127.0.0.1", 18082, []}, {http, "127.0.0.1", 18083, []}]),
+    ?assertEqual(5, length(gproc_pool:active_workers(default_channel))).
 
 add_and_remove_endpoints_active_workers(_Config) ->
     grpcbox_channel:add_endpoints(default_channel, [{http, "127.0.0.1", 18081, []}, {http, "127.0.0.1", 18082, []}, {http, "127.0.0.1", 18083, []}]),
@@ -74,7 +78,10 @@ add_and_remove_endpoints_active_workers(_Config) ->
     ?assertEqual(1, length(gproc_pool:active_workers({default_channel, active}))),
     grpcbox_channel:remove_endpoints(default_channel, [{https, "127.0.0.1", 18081, []}, {https, "127.0.0.1", 18082, []}, {https, "127.0.0.1", 18083, []}], normal),
     ct:sleep(1000),
-    ?assertEqual(1, length(gproc_pool:active_workers({default_channel, active}))).
+    ?assertEqual(1, length(gproc_pool:active_workers({default_channel, active}))),
+    grpcbox_channel:add_endpoints(default_channel, [{http, "127.0.0.1", 18081, []}, {http, "127.0.0.1", 18082, []}, {http, "127.0.0.1", 18083, []}]),
+    ct:sleep(1000),
+    ?assertEqual(4, length(gproc_pool:active_workers({default_channel, active}))).
 
 pick_worker_strategy(_Config) ->
     ?assertEqual(ok, pick_worker(default_channel)),
