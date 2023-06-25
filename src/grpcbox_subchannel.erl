@@ -27,6 +27,7 @@
                          stats_handler := module() | undefined
                         },
                conn :: pid() | undefined,
+               timer_ref :: reference(),
                idle_interval :: timer:time()}).
 
 start_link(Name, Channel, Endpoint, Encoding, StatsHandler) ->
@@ -49,6 +50,7 @@ init([Name, Channel, Endpoint, Encoding, StatsHandler]) ->
     gproc_pool:connect_worker(Channel, Name),
     Data = #data{name=Name,
             conn=undefined,
+            timer_ref = undefined,
             info=info_map(Endpoint, Encoding, StatsHandler),
             endpoint=Endpoint,
             channel=Channel},
@@ -76,22 +78,26 @@ callback_mode() ->
 ready({call, From}, conn, #data{conn=Conn,
                                 info=Info}) ->
     {keep_state_and_data, [{reply, From, {ok, Conn, Info}}]};
-ready(info, {'EXIT', Pid, _}, Data=#data{conn=Pid, name=Name, channel=Channel}) ->
+ready(info, {'EXIT', Pid, _}, Data=#data{conn=Pid0, name=Name, channel=Channel})
+    when Pid =:= Pid0 ->
     gproc_pool:disconnect_worker({Channel, active}, Name),
-    {next_state, disconnected, Data#data{conn=undefined}, [{next_event, internal, connect}]};
-ready(info, {timeout, connect}, _Data) ->
+    TimerRef = erlang:start_timer(?RECONNECT_INTERVAL, self(), connect),
+    {next_state, disconnected, Data#data{conn=undefined, timer_ref=TimerRef}};
+ready(info, {timeout, _TimerRef, connect}, _Data) ->
     keep_state_and_data;
 ready(EventType, EventContent, Data) ->
     handle_event(EventType, EventContent, Data).
 
 disconnected(internal, connect, Data) ->
     do_connect(Data);
-disconnected(info, {timeout, connect}, Data) ->
+disconnected(info, {timeout, TimerRef, connect}, #data{timer_ref=TimerRef0}=Data)
+    when TimerRef =:= TimerRef0 ->
     do_connect(Data);
+disconnected(info, {timeout, _TimerRef, connect}, _Data) ->
+    keep_state_and_data;
 disconnected({call, From}, conn, Data) ->
     connect(Data, From, [postpone]);
 disconnected(info, {'EXIT', _, _}, #data{conn=undefined}) ->
-    erlang:send_after(?RECONNECT_INTERVAL, self(), {timeout, connect}),
     keep_state_and_data;
 disconnected(EventType, EventContent, Data) ->
     handle_event(EventType, EventContent, Data).
@@ -100,7 +106,8 @@ handle_event({call, From}, info, #data{info=Info}) ->
     {keep_state_and_data, [{reply, From, Info}]};
 handle_event({call, From}, shutdown, _) ->
     {stop_and_reply, normal, {reply, From, ok}};
-handle_event(_, _, _) ->
+handle_event(Type, Content, Data) ->
+    ?LOG_INFO("Unexpected Event type: ~p, content: ~p, data: ~p", [Type, Content, Data]),
     keep_state_and_data.
 
 terminate(_Reason, _State, #data{conn=undefined,
@@ -133,12 +140,13 @@ do_connect(Data=#data{name=Name, channel=Channel,
                 conn=undefined, endpoint=Endpoint}) ->
     case start_h2_client(Endpoint) of
         {ok, Pid} ->
-            ?LOG_INFO("connect success name: ~p, channel: ~p", [Name, Channel]),
+            ?LOG_DEBUG("connect success name: ~p, channel: ~p", [Name, Channel]),
             gproc_pool:connect_worker({Channel, active}, Name),
-            {next_state, ready, Data#data{conn=Pid}};
+            {next_state, ready, Data#data{conn=Pid, timer_ref=undefined}};
         {error, Reason} ->
             ?LOG_INFO("connect fail reason: ~p name: ~p, channel: ~p", [Reason, Name, Channel]),
-            {next_state, disconnected, Data#data{conn=undefined}}
+            TimerRef = erlang:start_timer(?RECONNECT_INTERVAL, self(), connect),
+            {keep_state, Data#data{timer_ref=TimerRef}}
     end.
 
 connect(Data=#data{name=Name, channel=Channel,
@@ -147,9 +155,9 @@ connect(Data=#data{name=Name, channel=Channel,
     case start_h2_client(Endpoint) of
         {ok, Pid} ->
             gproc_pool:connect_worker({Channel, active}, Name),
-            {next_state, ready, Data#data{conn=Pid}, Actions};
+            {next_state, ready, Data#data{conn=Pid, timer_ref=undefined}, Actions};
         {error, _}=Error ->
-            {next_state, disconnected, Data#data{conn=undefined}, [{reply, From, Error}]}
+            {next_state, disconnected, Data, [{reply, From, Error}]}
     end;
 connect(Data=#data{conn=Pid}, From, Actions) when is_pid(Pid) ->
     h2_connection:stop(Pid),
