@@ -1,5 +1,7 @@
 -module(grpcbox_subchannel).
 
+-include_lib("kernel/include/logger.hrl").
+
 -behaviour(gen_statem).
 
 -export([start_link/5,
@@ -131,10 +133,11 @@ do_connect(Data=#data{name=Name, channel=Channel,
                 conn=undefined, endpoint=Endpoint}) ->
     case start_h2_client(Endpoint) of
         {ok, Pid} ->
+            ?LOG_INFO("connect success name: ~p, channel: ~p", [Name, Channel]),
             gproc_pool:connect_worker({Channel, active}, Name),
             {next_state, ready, Data#data{conn=Pid}};
-        {error, _} ->
-            erlang:send_after(?RECONNECT_INTERVAL, self(), {timeout, connect}),
+        {error, Reason} ->
+            ?LOG_INFO("connect fail reason: ~p name: ~p, channel: ~p", [Reason, Name, Channel]),
             {next_state, disconnected, Data#data{conn=undefined}}
     end.
 
