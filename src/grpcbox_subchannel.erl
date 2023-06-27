@@ -114,25 +114,19 @@ terminate(_Reason, _State, #data{conn=undefined,
                                  name=Name,
                                  channel=Channel}) ->
     gproc_pool:disconnect_worker(Channel, Name),
-    gproc_pool:remove_worker(Channel, Name),
-    gproc_pool:remove_worker({Channel, active}, Name),
     ok;
 terminate(normal, _State, #data{conn=Pid,
                                  name=Name,
                                  channel=Channel}) ->
     h2_connection:stop(Pid),
     gproc_pool:disconnect_worker(Channel, Name),
-    gproc_pool:remove_worker(Channel, Name),
     gproc_pool:disconnect_worker({Channel, active}, Name),
-    gproc_pool:remove_worker({Channel, active}, Name),
     ok;
 terminate(Reason, _State, #data{conn=Pid,
                                  name=Name,
                                  channel=Channel}) ->
     gproc_pool:disconnect_worker(Channel, Name),
-    gproc_pool:remove_worker(Channel, Name),
     gproc_pool:disconnect_worker({Channel, active}, Name),
-    gproc_pool:remove_worker({Channel, active}, Name),
     exit(Pid, Reason),
     ok.
 
